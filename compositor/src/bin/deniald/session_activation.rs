@@ -7,6 +7,12 @@ const GRAPHICAL_SESSION_TARGET: &str = "graphical-session.target";
 const SYSTEMD_DBUS_NAME: &str = "org.freedesktop.systemd1";
 
 pub(super) fn preserves_predecessor_kms_state(runtime_limit: RuntimeLimit) -> bool {
+    // A unikernel boot (no display manager) has no predecessor scanout to
+    // preserve; DENIA_NO_PREDECESSOR=1 opts out of the capture-and-restore
+    // path, which requires an already-bound primary plane.
+    if std::env::var_os("DENIA_NO_PREDECESSOR").is_some_and(|value| value == "1") {
+        return false;
+    }
     runtime_limit != RuntimeLimit::UntilLogout
 }
 

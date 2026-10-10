@@ -1532,6 +1532,8 @@ impl XdgShellHandler for RuntimeState {
     }
 
     fn maximize_request(&mut self, surface: ToplevelSurface) {
+        #[cfg(feature = "flutter")]
+        #[cfg(feature = "flutter")]
         if reassert_exact_toplevel_geometry(self, &surface) {
             return;
         }
@@ -1575,6 +1577,7 @@ impl XdgShellHandler for RuntimeState {
     }
 
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        #[cfg(feature = "flutter")]
         if reassert_exact_toplevel_geometry(self, &surface) {
             return;
         }
@@ -1599,6 +1602,7 @@ impl XdgShellHandler for RuntimeState {
         surface: ToplevelSurface,
         output: Option<wl_output::WlOutput>,
     ) {
+        #[cfg(feature = "flutter")]
         if reassert_exact_toplevel_geometry(self, &surface) {
             return;
         }
@@ -1628,6 +1632,7 @@ impl XdgShellHandler for RuntimeState {
     }
 
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        #[cfg(feature = "flutter")]
         if reassert_exact_toplevel_geometry(self, &surface) {
             return;
         }
@@ -1757,9 +1762,12 @@ impl XdgShellHandler for RuntimeState {
                     .is_some_and(|toplevel| toplevel.wl_surface() == surface.wl_surface())
             })
             .cloned();
+        #[cfg(feature = "flutter")]
         let was_focused = window
             .as_ref()
             .is_some_and(|window| release_window_focus(self, window));
+        #[cfg(not(feature = "flutter"))]
+        let was_focused = false;
         // Native Wayland clients choose their normal size and may create
         // independent auxiliary toplevels with the same app_id. Destruction
         // is therefore not evidence of user placement intent; interactive
@@ -1777,6 +1785,7 @@ impl XdgShellHandler for RuntimeState {
             }
         }
         if was_focused {
+            #[cfg(feature = "flutter")]
             activate_topmost_window(self);
         }
         self.scene_sync.mark_dirty();

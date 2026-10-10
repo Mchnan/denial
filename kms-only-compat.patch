@@ -1,0 +1,349 @@
+diff --git a/compositor/src/bin/deniald/cpu_scheduling.rs b/compositor/src/bin/deniald/cpu_scheduling.rs
+index 1820f02..ff80fe8 100644
+--- a/compositor/src/bin/deniald/cpu_scheduling.rs
++++ b/compositor/src/bin/deniald/cpu_scheduling.rs
+@@ -655,9 +655,10 @@ fn set_scheduler(tid: libc::pid_t, policy: libc::c_int, priority: libc::c_int) -
+ }
+ 
+ fn set_scheduler_raw(tid: libc::pid_t, policy: libc::c_int, priority: libc::c_int) -> bool {
+-    let parameters = libc::sched_param {
+-        sched_priority: priority,
+-    };
++    // SAFETY: sched_param is plain old data (ints and timespecs only); an
++    // all-zero value is a valid schedule specification for sched_setscheduler.
++    let mut parameters: libc::sched_param = unsafe { std::mem::zeroed() };
++    parameters.sched_priority = priority;
+     // SAFETY: the kernel reads a valid sched_param for the duration of this
+     // syscall. Linux addresses a specific thread by TID here.
+     unsafe {
+diff --git a/compositor/src/bin/deniald/frame_loop.rs b/compositor/src/bin/deniald/frame_loop.rs
+index 99768fc..84947b0 100644
+--- a/compositor/src/bin/deniald/frame_loop.rs
++++ b/compositor/src/bin/deniald/frame_loop.rs
+@@ -301,7 +301,9 @@ pub(super) fn run_frame_loop(
+                 frame_number,
+                 event_loop,
+                 events: &mut events,
++                #[cfg(feature = "flutter")]
+                 flutter: &mut flutter,
++                #[cfg(feature = "flutter")]
+                 flutter_launcher: flutter_launcher.as_deref_mut(),
+             })?;
+         }
+@@ -346,7 +348,9 @@ pub(super) fn run_frame_loop(
+                     frame_number,
+                     event_loop,
+                     events: &mut events,
++                    #[cfg(feature = "flutter")]
+                     flutter: &mut flutter,
++                    #[cfg(feature = "flutter")]
+                     flutter_launcher: flutter_launcher.as_deref_mut(),
+                 })?;
+             }
+diff --git a/compositor/src/bin/deniald/kms_pipeline.rs b/compositor/src/bin/deniald/kms_pipeline.rs
+index 3682ca7..edbbb39 100644
+--- a/compositor/src/bin/deniald/kms_pipeline.rs
++++ b/compositor/src/bin/deniald/kms_pipeline.rs
+@@ -1,12 +1,11 @@
+ //! Atomic hotplug planning, scanout reconciliation, commit, and rollback.
+ 
+-use super::kms_render::{
+-    current_scanout_state, render_blank_output_swapchains, render_diagnostic_atlas,
+-};
++use super::kms_render::{current_scanout_state, render_diagnostic_atlas};
++#[cfg(feature = "flutter")]
++use super::kms_render::render_blank_output_swapchains;
+ use super::kms_session::{ScanoutFramebufferSource, service_session_lifecycle};
+ use super::*;
+ 
+-#[cfg(feature = "flutter")]
+ pub(super) struct HotplugRequest<'a, 'event_loop> {
+     pub(super) renderer: &'a mut GlesRenderer,
+     pub(super) allocator: &'a mut ScanoutAllocator,
+@@ -20,11 +19,12 @@ pub(super) struct HotplugRequest<'a, 'event_loop> {
+     pub(super) frame_number: u64,
+     pub(super) event_loop: &'a mut EventLoop<'event_loop, RuntimeState>,
+     pub(super) events: &'a mut RuntimeState,
++    #[cfg(feature = "flutter")]
+     pub(super) flutter: &'a mut Option<flutter_runtime::FlutterRuntime>,
++    #[cfg(feature = "flutter")]
+     pub(super) flutter_launcher: Option<&'a mut FlutterLauncher>,
+ }
+ 
+-#[cfg(feature = "flutter")]
+ pub(super) fn apply_hotplug_topology(
+     request: HotplugRequest<'_, '_>,
+ ) -> Result<(), Box<dyn Error>> {
+@@ -41,7 +41,9 @@ pub(super) fn apply_hotplug_topology(
+         frame_number,
+         event_loop,
+         events,
++        #[cfg(feature = "flutter")]
+         flutter,
++        #[cfg(feature = "flutter")]
+         mut flutter_launcher,
+     } = request;
+     if outputs.is_empty() {
+diff --git a/compositor/src/bin/deniald/kms_state.rs b/compositor/src/bin/deniald/kms_state.rs
+index 9174408..dacf65e 100644
+--- a/compositor/src/bin/deniald/kms_state.rs
++++ b/compositor/src/bin/deniald/kms_state.rs
+@@ -1,6 +1,8 @@
+ //! Ownership and rollback state for DRM scanouts and render-target buffers.
+ 
+-use super::kms_render::{output_plane_state, plane_state, plane_state_for_mode};
++use super::kms_render::{plane_state, plane_state_for_mode};
++#[cfg(feature = "flutter")]
++use super::kms_render::output_plane_state;
+ use super::*;
+ #[cfg(feature = "flutter")]
+ use denial_core::topology::{RenderOutputPlan, RenderViewId};
+diff --git a/compositor/src/bin/deniald/runtime_state.rs b/compositor/src/bin/deniald/runtime_state.rs
+index ed60cff..83ca7dd 100644
+--- a/compositor/src/bin/deniald/runtime_state.rs
++++ b/compositor/src/bin/deniald/runtime_state.rs
+@@ -116,6 +116,7 @@ pub(super) struct RuntimeState {
+     pub(super) output_control: Option<output_control::OutputControlPublisher>,
+     #[cfg(feature = "flutter")]
+     pub(super) dpms_topology: dpms::DpmsTopologyGuard,
++    #[cfg(feature = "flutter")]
+     pub(super) pending_ui_development: VecDeque<PendingUiDevelopment>,
+     #[cfg(feature = "flutter")]
+     pub(super) idle_policy: idle_policy::IdlePolicy,
+@@ -123,14 +124,6 @@ pub(super) struct RuntimeState {
+ 
+ #[cfg(feature = "flutter")]
+ impl RuntimeState {
+-    pub(super) fn secure_session_locked(&self) -> bool {
+-        self.session_lock_applied
+-            || self
+-                .authentication
+-                .as_ref()
+-                .is_some_and(|authentication| authentication.locked())
+-    }
+-
+     pub(super) fn queue_shell_action(
+         &mut self,
+         action: wire::ShellAction,
+@@ -226,4 +219,16 @@ impl RuntimeState {
+             true
+         }
+     }
++
++    #[cfg(feature = "flutter")]
++    pub(super) fn secure_session_locked(&self) -> bool {
++        self.session_lock_applied || self.authentication_locked()
++    }
++
++    #[cfg(feature = "flutter")]
++    fn authentication_locked(&self) -> bool {
++        self.authentication
++            .as_ref()
++            .is_some_and(|authentication| authentication.locked())
++    }
+ }
+diff --git a/compositor/src/bin/deniald/session_activation.rs b/compositor/src/bin/deniald/session_activation.rs
+index 1eaf1ac..160043c 100644
+--- a/compositor/src/bin/deniald/session_activation.rs
++++ b/compositor/src/bin/deniald/session_activation.rs
+@@ -7,6 +7,12 @@ const GRAPHICAL_SESSION_TARGET: &str = "graphical-session.target";
+ const SYSTEMD_DBUS_NAME: &str = "org.freedesktop.systemd1";
+ 
+ pub(super) fn preserves_predecessor_kms_state(runtime_limit: RuntimeLimit) -> bool {
++    // A unikernel boot (no display manager) has no predecessor scanout to
++    // preserve; DENIA_NO_PREDECESSOR=1 opts out of the capture-and-restore
++    // path, which requires an already-bound primary plane.
++    if std::env::var_os("DENIA_NO_PREDECESSOR").is_some_and(|value| value == "1") {
++        return false;
++    }
+     runtime_limit != RuntimeLimit::UntilLogout
+ }
+ 
+diff --git a/compositor/src/bin/deniald/wayland_frontend.rs b/compositor/src/bin/deniald/wayland_frontend.rs
+index ab23337..9058102 100644
+--- a/compositor/src/bin/deniald/wayland_frontend.rs
++++ b/compositor/src/bin/deniald/wayland_frontend.rs
+@@ -181,10 +181,9 @@ mod window_state;
+ #[path = "wayland_frontend/xwayland.rs"]
+ mod xwayland;
+ 
++pub(super) use clipboard_io::DeferredClipboardCapture;
+ #[cfg(feature = "flutter")]
+-pub(super) use clipboard_io::{
+-    DeferredClipboardCapture, apply_clipboard_actions, cancel_clipboard_captures,
+-};
++pub(super) use clipboard_io::{apply_clipboard_actions, cancel_clipboard_captures};
+ use focus::KeyboardFocusTarget;
+ use handlers::{MAX_WAYLAND_CLIENTS, WaylandClientBudget};
+ #[cfg(feature = "flutter")]
+diff --git a/compositor/src/bin/deniald/wayland_frontend/clipboard.rs b/compositor/src/bin/deniald/wayland_frontend/clipboard.rs
+index a9817e3..53f29c1 100644
+--- a/compositor/src/bin/deniald/wayland_frontend/clipboard.rs
++++ b/compositor/src/bin/deniald/wayland_frontend/clipboard.rs
+@@ -515,7 +515,10 @@ pub(crate) fn apply_clipboard_actions(state: &mut RuntimeState, actions: Vec<Cli
+                     warn!(%error, "could not clear retained Xwayland clipboard");
+                 }
+             }
++            #[cfg(feature = "flutter")]
+             ClipboardAction::StartDrag { item_id } => start_retained_drag(state, item_id),
++            #[cfg(not(feature = "flutter"))]
++            ClipboardAction::StartDrag { .. } => {}
+         }
+     }
+ }
+@@ -581,6 +584,7 @@ fn paste_into_focused_client(state: &mut RuntimeState) {
+     debug!("pasted activated clipboard item into focused client");
+ }
+ 
++#[cfg(feature = "flutter")]
+ fn start_retained_drag(state: &mut RuntimeState, item_id: u64) {
+     if state.secure_session_locked() || !state.flutter_input.pointer_captured() {
+         warn!(
+diff --git a/compositor/src/bin/deniald/wayland_frontend/handlers.rs b/compositor/src/bin/deniald/wayland_frontend/handlers.rs
+index a565272..56fbea9 100644
+--- a/compositor/src/bin/deniald/wayland_frontend/handlers.rs
++++ b/compositor/src/bin/deniald/wayland_frontend/handlers.rs
+@@ -1532,6 +1532,8 @@ impl XdgShellHandler for RuntimeState {
+     }
+ 
+     fn maximize_request(&mut self, surface: ToplevelSurface) {
++        #[cfg(feature = "flutter")]
++        #[cfg(feature = "flutter")]
+         if reassert_exact_toplevel_geometry(self, &surface) {
+             return;
+         }
+@@ -1575,6 +1577,7 @@ impl XdgShellHandler for RuntimeState {
+     }
+ 
+     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
++        #[cfg(feature = "flutter")]
+         if reassert_exact_toplevel_geometry(self, &surface) {
+             return;
+         }
+@@ -1599,6 +1602,7 @@ impl XdgShellHandler for RuntimeState {
+         surface: ToplevelSurface,
+         output: Option<wl_output::WlOutput>,
+     ) {
++        #[cfg(feature = "flutter")]
+         if reassert_exact_toplevel_geometry(self, &surface) {
+             return;
+         }
+@@ -1628,6 +1632,7 @@ impl XdgShellHandler for RuntimeState {
+     }
+ 
+     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
++        #[cfg(feature = "flutter")]
+         if reassert_exact_toplevel_geometry(self, &surface) {
+             return;
+         }
+@@ -1757,9 +1762,12 @@ impl XdgShellHandler for RuntimeState {
+                     .is_some_and(|toplevel| toplevel.wl_surface() == surface.wl_surface())
+             })
+             .cloned();
++        #[cfg(feature = "flutter")]
+         let was_focused = window
+             .as_ref()
+             .is_some_and(|window| release_window_focus(self, window));
++        #[cfg(not(feature = "flutter"))]
++        let was_focused = false;
+         // Native Wayland clients choose their normal size and may create
+         // independent auxiliary toplevels with the same app_id. Destruction
+         // is therefore not evidence of user placement intent; interactive
+@@ -1777,6 +1785,7 @@ impl XdgShellHandler for RuntimeState {
+             }
+         }
+         if was_focused {
++            #[cfg(feature = "flutter")]
+             activate_topmost_window(self);
+         }
+         self.scene_sync.mark_dirty();
+diff --git a/compositor/src/bin/deniald/wayland_frontend/input.rs b/compositor/src/bin/deniald/wayland_frontend/input.rs
+index 221bc52..1f8defc 100644
+--- a/compositor/src/bin/deniald/wayland_frontend/input.rs
++++ b/compositor/src/bin/deniald/wayland_frontend/input.rs
+@@ -1485,6 +1485,7 @@ fn reset_input_devices(state: &mut RuntimeState, reset: InputDeviceReset) {
+     } else {
+         HashSet::new()
+     };
++    #[cfg(feature = "flutter")]
+     if reset.keyboard {
+         frontend.shell_keyboard_keys.clear();
+     }
+diff --git a/compositor/src/bin/deniald/wayland_frontend/input_method.rs b/compositor/src/bin/deniald/wayland_frontend/input_method.rs
+index f8c9ccb..ead5857 100644
+--- a/compositor/src/bin/deniald/wayland_frontend/input_method.rs
++++ b/compositor/src/bin/deniald/wayland_frontend/input_method.rs
+@@ -954,6 +954,7 @@ impl Dispatch<ZwpVirtualKeyboardV1, VirtualKeyboardUserData> for RuntimeState {
+                     return;
+                 };
+                 let keycode = Keycode::new(key + XKB_KEYCODE_OFFSET);
++                #[cfg(feature = "flutter")]
+                 if super::input::dispatch_input_method_key_to_flutter(
+                     state,
+                     &keyboard,
+diff --git a/compositor/src/bin/deniald/wayland_frontend/startup.rs b/compositor/src/bin/deniald/wayland_frontend/startup.rs
+index ab62798..c59188f 100644
+--- a/compositor/src/bin/deniald/wayland_frontend/startup.rs
++++ b/compositor/src/bin/deniald/wayland_frontend/startup.rs
+@@ -300,6 +300,7 @@ impl WaylandFrontend {
+                             error!(%error, "could not publish Xwayland DPI settings");
+                         }
+                         frontend.xwm = Some(xwm);
++                        #[cfg(feature = "flutter")]
+                         match super::super::xembed_tray::XEmbedTray::start(frontend.xdisplay_name())
+                         {
+                             Ok(tray) => frontend.xembed_tray = Some(tray),
+diff --git a/compositor/src/bin/deniald/wayland_frontend/window_layout.rs b/compositor/src/bin/deniald/wayland_frontend/window_layout.rs
+index c7d125a..9c8821f 100644
+--- a/compositor/src/bin/deniald/wayland_frontend/window_layout.rs
++++ b/compositor/src/bin/deniald/wayland_frontend/window_layout.rs
+@@ -611,12 +611,19 @@ impl WaylandFrontend {
+     }
+ 
+     fn focused_layout_window(&self) -> Option<ObjectId> {
+-        let focus = self.seat.get_keyboard()?.current_focus()?;
+-        let surface = focus.wl_surface()?;
+-        let root = self
+-            .owning_toplevel_surface(&surface)
+-            .unwrap_or_else(|| surface.into_owned());
+-        Some(root.id())
++        #[cfg(feature = "flutter")]
++        {
++            let focus = self.seat.get_keyboard()?.current_focus()?;
++            let surface = focus.wl_surface()?;
++            let root = self
++                .owning_toplevel_surface(&surface)
++                .unwrap_or_else(|| surface.into_owned());
++            Some(root.id())
++        }
++        #[cfg(not(feature = "flutter"))]
++        {
++            None
++        }
+     }
+ }
+ 
+diff --git a/compositor/src/bin/deniald/wayland_frontend/window_management.rs b/compositor/src/bin/deniald/wayland_frontend/window_management.rs
+index 0a362f4..417dbc1 100644
+--- a/compositor/src/bin/deniald/wayland_frontend/window_management.rs
++++ b/compositor/src/bin/deniald/wayland_frontend/window_management.rs
+@@ -1363,6 +1363,7 @@ pub(super) fn toggle_shell_vertical_maximize_focused_toplevel(state: &mut Runtim
+     true
+ }
+ 
++#[cfg(feature = "flutter")]
+ pub(super) fn toggle_shell_fullscreen_focused_toplevel(state: &mut RuntimeState) -> bool {
+     if let Some(window_id) = focused_local_window(state) {
+         queue_local_window_action(state, window_id, WindowAction::ToggleFullscreen);
+diff --git a/compositor/src/bin/deniald/wayland_frontend/window_state.rs b/compositor/src/bin/deniald/wayland_frontend/window_state.rs
+index dd0a58a..c7257ca 100644
+--- a/compositor/src/bin/deniald/wayland_frontend/window_state.rs
++++ b/compositor/src/bin/deniald/wayland_frontend/window_state.rs
+@@ -603,6 +603,7 @@ impl WaylandFrontend {
+         let Some(root_surface) = self.window_root_surface(window) else {
+             return;
+         };
++        #[cfg(feature = "flutter")]
+         self.shell_vertical_restore_geometries
+             .remove(&root_surface.id());
+         if let Some(x11) = window.x11_surface()

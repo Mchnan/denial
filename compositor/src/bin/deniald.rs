@@ -52,6 +52,9 @@ mod kms_state;
 #[path = "deniald/lifecycle.rs"]
 mod lifecycle;
 #[cfg(feature = "flutter")]
+#[path = "deniald/liveness_probe.rs"]
+mod liveness_probe;
+#[cfg(feature = "flutter")]
 #[path = "deniald/local_windows.rs"]
 mod local_windows;
 #[cfg(feature = "flutter")]

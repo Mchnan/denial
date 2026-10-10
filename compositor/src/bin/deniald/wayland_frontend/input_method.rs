@@ -954,6 +954,7 @@ impl Dispatch<ZwpVirtualKeyboardV1, VirtualKeyboardUserData> for RuntimeState {
                     return;
                 };
                 let keycode = Keycode::new(key + XKB_KEYCODE_OFFSET);
+                #[cfg(feature = "flutter")]
                 if super::input::dispatch_input_method_key_to_flutter(
                     state,
                     &keyboard,

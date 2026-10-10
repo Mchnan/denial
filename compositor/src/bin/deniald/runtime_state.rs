@@ -116,6 +116,7 @@ pub(super) struct RuntimeState {
     pub(super) output_control: Option<output_control::OutputControlPublisher>,
     #[cfg(feature = "flutter")]
     pub(super) dpms_topology: dpms::DpmsTopologyGuard,
+    #[cfg(feature = "flutter")]
     pub(super) pending_ui_development: VecDeque<PendingUiDevelopment>,
     #[cfg(feature = "flutter")]
     pub(super) idle_policy: idle_policy::IdlePolicy,
@@ -123,14 +124,6 @@ pub(super) struct RuntimeState {
 
 #[cfg(feature = "flutter")]
 impl RuntimeState {
-    pub(super) fn secure_session_locked(&self) -> bool {
-        self.session_lock_applied
-            || self
-                .authentication
-                .as_ref()
-                .is_some_and(|authentication| authentication.locked())
-    }
-
     pub(super) fn queue_shell_action(
         &mut self,
         action: wire::ShellAction,
@@ -225,5 +218,17 @@ impl RuntimeState {
         {
             true
         }
+    }
+
+    #[cfg(feature = "flutter")]
+    pub(super) fn secure_session_locked(&self) -> bool {
+        self.session_lock_applied || self.authentication_locked()
+    }
+
+    #[cfg(feature = "flutter")]
+    fn authentication_locked(&self) -> bool {
+        self.authentication
+            .as_ref()
+            .is_some_and(|authentication| authentication.locked())
     }
 }

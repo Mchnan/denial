@@ -181,10 +181,9 @@ mod window_state;
 #[path = "wayland_frontend/xwayland.rs"]
 mod xwayland;
 
+pub(super) use clipboard_io::DeferredClipboardCapture;
 #[cfg(feature = "flutter")]
-pub(super) use clipboard_io::{
-    DeferredClipboardCapture, apply_clipboard_actions, cancel_clipboard_captures,
-};
+pub(super) use clipboard_io::{apply_clipboard_actions, cancel_clipboard_captures};
 use focus::KeyboardFocusTarget;
 use handlers::{MAX_WAYLAND_CLIENTS, WaylandClientBudget};
 #[cfg(feature = "flutter")]

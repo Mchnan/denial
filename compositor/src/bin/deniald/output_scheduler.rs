@@ -7,7 +7,7 @@ use denial_core::topology::{OutputId, OutputTransform, PixelRect, PixelSize, Ren
 use denial_core::volition::{self, CommitId, PlaneCommit, PlaneProperties, Submission, Volition};
 use smithay::backend::drm::DrmDevice;
 use smithay::reexports::calloop::channel::SyncSender as EventSender;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use super::flutter_runtime::{FlutterRuntime, ReadyOutputFrame};
 use super::frame_scheduler::{FrameTick, OutputFrameRequest};
@@ -1076,6 +1076,13 @@ impl OutputScheduler {
         let slot = &mut self.ready_fences[fence_pool_index].slots[index];
         slot.claim(fence, 1, token)
             .expect("prevalidated Flutter fence slot changed during publication");
+        info!(
+            output = ?output_id,
+            index,
+            token,
+            has_fence = slot.fence.is_some(),
+            "ready fence slot claimed"
+        );
         if let Some(pipeline_index) = pipeline_index {
             let pipeline = &mut self.pipelines[pipeline_index];
             pipeline
@@ -1118,6 +1125,13 @@ impl OutputScheduler {
                 if signaled {
                     let discard_users = slot.discard_users_on_signal;
                     slot.discard_users_on_signal = 0;
+                    info!(
+                        output = ?signal.output,
+                        index = signal.index,
+                        token = signal.token,
+                        discard_users,
+                        "ready fence signaled"
+                    );
                     for _ in 0..discard_users {
                         runtime.release_output(signal.output, signal.index)?;
                         slot.release_user()?;
@@ -1177,11 +1191,15 @@ impl OutputScheduler {
                     // Keep the pending frame and its Flutter ownership intact.
                     // The caller will invalidate this entire scheduler only
                     // after establishing a synchronous KMS baseline.
+                    error!(%failure, "volition commit stalled");
                     if stalled.is_none() {
                         stalled = Some(failure);
                     }
                 }
-                volition::Event::Failed(failure) => return Err(Box::new(failure)),
+                volition::Event::Failed(failure) => {
+                    error!(%failure, "volition commit failed");
+                    return Err(Box::new(failure));
+                }
             }
         }
         if let Some(frontend) = events.wayland.as_mut() {
@@ -1350,6 +1368,42 @@ impl OutputScheduler {
         })
     }
 
+    /// Dumps per-pipeline frame-lane states for one unavailable output so a
+    /// wedged Ready/InFlight lane is visible in the render audit stream.
+    pub(super) fn render_unavailable_diagnostic(&self, output: OutputId) {
+        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        static COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let enabled = *ENABLED.get_or_init(|| {
+            std::env::var("DENIA_RENDER_AUDIT")
+                .map(|value| !value.is_empty() && value != "0")
+                .unwrap_or(false)
+        });
+        if !enabled {
+            return;
+        }
+        let n = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if n >= 40 && n % 200 != 0 {
+            return;
+        }
+        let pipelines: Vec<(OutputId, usize, bool, bool, Option<&'static str>)> = self
+            .pipelines
+            .iter()
+            .map(|pipeline| {
+                (
+                    pipeline.output_id,
+                    pipeline.scanning,
+                    pipeline.powering_off,
+                    pipeline.frames.ready.is_some(),
+                    pipeline.frames.in_flight.as_ref().map(|frame| match frame {
+                        InFlightFrame::Scheduled(_) => "scheduled",
+                        InFlightFrame::Submitted(_) => "submitted",
+                    }),
+                )
+            })
+            .collect();
+        info!(?output, ?pipelines, "render scheduler unavailable");
+    }
+
     /// A frame already completed by Flutter must always be drained when an
     /// output disappeared or entered power-off, so its buffer can be released.
     /// Active outputs accept it only when their unique Ready slot is empty.
@@ -1421,6 +1475,12 @@ impl OutputScheduler {
             let previous = pipeline.scanning;
             pipeline.scanning = presented.index;
             pipeline.scanning_screenshot_request_id = presented.screenshot_request_id;
+            info!(
+                crtc = u32::from(completion.crtc),
+                index = presented.index,
+                previous_index = previous,
+                "page flip completed; retiring frame"
+            );
             if let Err(error) = runtime.release_output(pipeline.output_id, previous) {
                 processing_error = Some(error);
                 break;

@@ -1485,6 +1485,7 @@ fn reset_input_devices(state: &mut RuntimeState, reset: InputDeviceReset) {
     } else {
         HashSet::new()
     };
+    #[cfg(feature = "flutter")]
     if reset.keyboard {
         frontend.shell_keyboard_keys.clear();
     }

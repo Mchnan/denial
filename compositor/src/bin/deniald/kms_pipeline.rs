@@ -1,12 +1,11 @@
 //! Atomic hotplug planning, scanout reconciliation, commit, and rollback.
 
-use super::kms_render::{
-    current_scanout_state, render_blank_output_swapchains, render_diagnostic_atlas,
-};
+use super::kms_render::{current_scanout_state, render_diagnostic_atlas};
+#[cfg(feature = "flutter")]
+use super::kms_render::render_blank_output_swapchains;
 use super::kms_session::{ScanoutFramebufferSource, service_session_lifecycle};
 use super::*;
 
-#[cfg(feature = "flutter")]
 pub(super) struct HotplugRequest<'a, 'event_loop> {
     pub(super) renderer: &'a mut GlesRenderer,
     pub(super) allocator: &'a mut ScanoutAllocator,
@@ -20,11 +19,12 @@ pub(super) struct HotplugRequest<'a, 'event_loop> {
     pub(super) frame_number: u64,
     pub(super) event_loop: &'a mut EventLoop<'event_loop, RuntimeState>,
     pub(super) events: &'a mut RuntimeState,
+    #[cfg(feature = "flutter")]
     pub(super) flutter: &'a mut Option<flutter_runtime::FlutterRuntime>,
+    #[cfg(feature = "flutter")]
     pub(super) flutter_launcher: Option<&'a mut FlutterLauncher>,
 }
 
-#[cfg(feature = "flutter")]
 pub(super) fn apply_hotplug_topology(
     request: HotplugRequest<'_, '_>,
 ) -> Result<(), Box<dyn Error>> {
@@ -41,7 +41,9 @@ pub(super) fn apply_hotplug_topology(
         frame_number,
         event_loop,
         events,
+        #[cfg(feature = "flutter")]
         flutter,
+        #[cfg(feature = "flutter")]
         mut flutter_launcher,
     } = request;
     if outputs.is_empty() {

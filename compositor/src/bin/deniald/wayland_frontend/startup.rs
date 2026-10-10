@@ -300,6 +300,7 @@ impl WaylandFrontend {
                             error!(%error, "could not publish Xwayland DPI settings");
                         }
                         frontend.xwm = Some(xwm);
+                        #[cfg(feature = "flutter")]
                         match super::super::xembed_tray::XEmbedTray::start(frontend.xdisplay_name())
                         {
                             Ok(tray) => frontend.xembed_tray = Some(tray),

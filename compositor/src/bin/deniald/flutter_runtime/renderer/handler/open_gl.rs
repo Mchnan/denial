@@ -162,6 +162,21 @@ impl OpenGlHandler for FlutterGlHandler {
         unsafe {
             (self.gl.bind_framebuffer)(gl::FRAMEBUFFER, framebuffer);
             (self.gl.viewport)(0, 0, size.width as i32, size.height as i32);
+            // The engine renders into this borrowed FBO without any further
+            // completeness validation; an incomplete attachment makes Skia
+            // drop the frame silently and the output pipeline wedges with an
+            // un-recycled Rendering slot. Surface the status right where the
+            // engine first sees the target.
+            let status = (self.gl.check_framebuffer_status)(gl::FRAMEBUFFER);
+            if status != gl::FRAMEBUFFER_COMPLETE {
+                error!(
+                    framebuffer,
+                    width = size.width,
+                    height = size.height,
+                    status = format_args!("{:#x}", status),
+                    "Flutter output backing store FBO is not complete"
+                );
+            }
         }
         if let Some(gpu_timing) = &self.gpu_timing {
             lock(gpu_timing).begin(framebuffer);
@@ -298,6 +313,42 @@ impl OpenGlHandler for FlutterGlHandler {
                 lock(gpu_timing).finish(framebuffer);
             }
             let context = lock(&self.render_context);
+            let native_fences_supported = context
+                .context
+                .display()
+                .extensions()
+                .iter()
+                .any(|extension| extension == "EGL_ANDROID_native_fence_sync");
+            if !native_fences_supported {
+                // Software EGL implementations (for example llvmpipe or
+                // kms_swrast) expose EGL_KHR_fence_sync but cannot export a
+                // native sync_file. Rendering completes on the CPU before the
+                // scanout buffer is queued, so a full pipeline completion is a
+                // safe substitute for the missing release fence.
+                debug!(
+                    view_id,
+                    framebuffer, "EGL lacks native fence export; publishing after glFinish"
+                );
+                // SAFETY: present runs with the raster context current.
+                unsafe { (self.gl.finish)() };
+                *lock(&self.sampled_buffer_release_fence) = None;
+                let rendered_at = self.render_audit.as_ref().map(|_| Instant::now());
+                if !lock(&self.broker).mark_ready(
+                    view_id,
+                    framebuffer,
+                    frame.frame_damage,
+                    frame.buffer_damage,
+                    None,
+                    rendered_at,
+                ) {
+                    error!(
+                        view_id,
+                        framebuffer, "Flutter presented an output FBO that was not rendering"
+                    );
+                    return false;
+                }
+                return true;
+            }
             let fence = match EGLFence::create(context.context.display()) {
                 Ok(fence) => {
                     // The fence follows Flutter's render commands. Flushing

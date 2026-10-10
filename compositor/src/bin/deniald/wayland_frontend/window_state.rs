@@ -603,6 +603,7 @@ impl WaylandFrontend {
         let Some(root_surface) = self.window_root_surface(window) else {
             return;
         };
+        #[cfg(feature = "flutter")]
         self.shell_vertical_restore_geometries
             .remove(&root_surface.id());
         if let Some(x11) = window.x11_surface()

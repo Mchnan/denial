@@ -2,6 +2,80 @@
 
 use super::*;
 
+/// Rate-limited diagnostic for the output-timeline audit: explains why a
+/// scanout target is unavailable (missing pool, stale authorization, or
+/// buffer states). Gated by DENIA_RENDER_AUDIT and capped so a stuck
+/// pipeline cannot flood the log.
+fn render_target_unavailable_diagnostic(broker: &OutputBufferBroker, output: OutputId) {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    static COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let enabled = *ENABLED.get_or_init(|| {
+        std::env::var("DENIA_RENDER_AUDIT")
+            .map(|value| !value.is_empty() && value != "0")
+            .unwrap_or(false)
+    });
+    if !enabled {
+        return;
+    }
+    let n = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if n >= 40 && n % 200 != 0 {
+        return;
+    }
+    let pools: Vec<(OutputId, PixelSize, bool, Vec<(BufferState, usize)>)> = broker
+        .pools
+        .iter()
+        .map(|pool| {
+            (
+                pool.output_id,
+                pool.size,
+                pool.authorized_request.is_some(),
+                pool.slots
+                    .iter()
+                    .map(|slot| (slot.state, slot.output_refs))
+                    .collect(),
+            )
+        })
+        .collect();
+    let matched = broker.pools.iter().any(|pool| pool.output_id == output);
+    info!(?output, ?pools, matched, "output target unavailable");
+}
+
+fn authorize_diagnostic(output: OutputId, interval: Duration) {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    static COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let enabled = *ENABLED.get_or_init(|| {
+        std::env::var("DENIA_RENDER_AUDIT")
+            .map(|value| !value.is_empty() && value != "0")
+            .unwrap_or(false)
+    });
+    if !enabled {
+        return;
+    }
+    let n = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if n >= 12 {
+        return;
+    }
+    info!(?output, ?interval, "output target authorized");
+}
+
+fn acquire_failure_diagnostic(render_view_id: i64, size: PixelSize, reason: &'static str) {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    static COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let enabled = *ENABLED.get_or_init(|| {
+        std::env::var("DENIA_RENDER_AUDIT")
+            .map(|value| !value.is_empty() && value != "0")
+            .unwrap_or(false)
+    });
+    if !enabled {
+        return;
+    }
+    let n = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if n >= 12 {
+        return;
+    }
+    info!(render_view_id, ?size, reason, "flutter backing store acquire failed");
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum BufferState {
     Free,
@@ -156,13 +230,19 @@ impl OutputBufferBroker {
                     slot.screenshot_request_id = None;
                     slot.ready_transaction = 0;
                     slot.request = None;
+                    info!(
+                        output = ?pool.output_id,
+                        transaction = self.transaction,
+                        "pipeline rescued a rendering slot without output references"
+                    );
                 }
             }
         }
     }
 
     pub(super) fn target_available(&self, output: OutputId) -> bool {
-        self.pools
+        let available = self
+            .pools
             .iter()
             .find(|pool| pool.output_id == output)
             .is_some_and(|pool| {
@@ -175,7 +255,11 @@ impl OutputBufferBroker {
                         .slots
                         .iter()
                         .any(|slot| slot.state == BufferState::Free && slot.output_refs == 0)
-            })
+            });
+        if !available {
+            render_target_unavailable_diagnostic(self, output);
+        }
+        available
     }
 
     pub(super) fn authorize(&mut self, request: OutputFrameRequest, now: Instant) -> Option<i64> {
@@ -186,6 +270,7 @@ impl OutputBufferBroker {
             .pools
             .iter_mut()
             .find(|pool| pool.output_id == request.tick.output)?;
+        authorize_diagnostic(pool.output_id, request.tick.interval);
         pool.authorized_request = Some(AuthorizedOutputRequest {
             request,
             authorized_at: now,
@@ -226,9 +311,11 @@ impl OutputBufferBroker {
             .iter_mut()
             .find(|pool| pool.render_view_id.get() == render_view_id && pool.size == size)
         else {
+            acquire_failure_diagnostic(render_view_id, size, "no matching pool");
             return Err(RenderTargetBlocked::PoolExhausted);
         };
         let Some(authorization) = pool.authorized_request else {
+            acquire_failure_diagnostic(render_view_id, size, "no authorization");
             return Err(RenderTargetBlocked::PoolExhausted);
         };
         if pool
@@ -257,6 +344,13 @@ impl OutputBufferBroker {
             .map(|(_, request_id)| request_id);
         slot.ready_transaction = 0;
         slot.request = Some(authorization.request);
+        info!(
+            render_view_id,
+            index = slot_index,
+            framebuffer = slot.framebuffer,
+            transaction = self.transaction,
+            "pipeline slot acquired for rendering"
+        );
         Ok(slot.framebuffer)
     }
 
@@ -297,6 +391,7 @@ impl OutputBufferBroker {
             .iter()
             .position(|slot| slot.framebuffer == framebuffer)
         else {
+            info!(render_view_id, framebuffer, "mark_ready rejected: no matching slot");
             return false;
         };
         if pool.slots[index].state != BufferState::Rendering
@@ -306,6 +401,12 @@ impl OutputBufferBroker {
                 .enumerate()
                 .any(|(other_index, slot)| other_index != index && slot.state == BufferState::Ready)
         {
+            info!(
+                render_view_id,
+                framebuffer,
+                state = ?pool.slots[index].state,
+                "mark_ready rejected: slot state or concurrent ready slot"
+            );
             return false;
         }
         let mut frame_damage_region = DamageRegion::empty(pool.size.width, pool.size.height);
@@ -324,6 +425,14 @@ impl OutputBufferBroker {
         slot.fence = fence;
         slot.rendered_at = rendered_at;
         slot.ready_transaction = self.transaction;
+        info!(
+            render_view_id,
+            framebuffer,
+            index,
+            transaction = self.transaction,
+            has_fence = slot.fence.is_some(),
+            "pipeline slot marked ready"
+        );
         true
     }
 
@@ -339,6 +448,12 @@ impl OutputBufferBroker {
             let slot = &mut pool.slots[index];
             slot.state = BufferState::Pending;
             slot.ready_transaction = 0;
+            info!(
+                output = ?pool.output_id,
+                index,
+                transaction,
+                "pipeline frame finished transaction"
+            );
             let request = slot
                 .request
                 .take()
@@ -400,6 +515,11 @@ impl OutputBufferBroker {
         }
         slot.state = BufferState::Free;
         slot.output_refs = 1;
+        info!(
+            output = ?output.output_id,
+            index = output.index,
+            "pipeline frame published to output scanout"
+        );
         Ok(())
     }
 
@@ -418,6 +538,13 @@ impl OutputBufferBroker {
             return Err("released a Flutter buffer without an output owner");
         }
         slot.output_refs -= 1;
+        info!(
+            output = ?output,
+            index,
+            remaining_refs = slot.output_refs,
+            state = ?slot.state,
+            "pipeline output released"
+        );
         Ok(())
     }
 

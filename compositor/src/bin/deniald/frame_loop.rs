@@ -301,7 +301,9 @@ pub(super) fn run_frame_loop(
                 frame_number,
                 event_loop,
                 events: &mut events,
+                #[cfg(feature = "flutter")]
                 flutter: &mut flutter,
+                #[cfg(feature = "flutter")]
                 flutter_launcher: flutter_launcher.as_deref_mut(),
             })?;
         }
@@ -346,7 +348,9 @@ pub(super) fn run_frame_loop(
                     frame_number,
                     event_loop,
                     events: &mut events,
+                    #[cfg(feature = "flutter")]
                     flutter: &mut flutter,
+                    #[cfg(feature = "flutter")]
                     flutter_launcher: flutter_launcher.as_deref_mut(),
                 })?;
             }

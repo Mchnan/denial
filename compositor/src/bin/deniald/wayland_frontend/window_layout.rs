@@ -611,12 +611,19 @@ impl WaylandFrontend {
     }
 
     fn focused_layout_window(&self) -> Option<ObjectId> {
-        let focus = self.seat.get_keyboard()?.current_focus()?;
-        let surface = focus.wl_surface()?;
-        let root = self
-            .owning_toplevel_surface(&surface)
-            .unwrap_or_else(|| surface.into_owned());
-        Some(root.id())
+        #[cfg(feature = "flutter")]
+        {
+            let focus = self.seat.get_keyboard()?.current_focus()?;
+            let surface = focus.wl_surface()?;
+            let root = self
+                .owning_toplevel_surface(&surface)
+                .unwrap_or_else(|| surface.into_owned());
+            Some(root.id())
+        }
+        #[cfg(not(feature = "flutter"))]
+        {
+            None
+        }
     }
 }
 

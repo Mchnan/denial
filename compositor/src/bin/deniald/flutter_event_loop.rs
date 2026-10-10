@@ -318,22 +318,39 @@ pub(super) fn run_flutter_event_loop(
     cpu_scheduling::contain_unregistered_priority_threads();
     cpu_scheduling::promote_compositor_thread();
 
+    #[cfg(feature = "flutter")]
+    let dispatch_liveness = {
+        let liveness = std::sync::Arc::new(liveness_probe::DispatchLiveness::new());
+        liveness.spawn_heartbeat();
+        liveness
+    };
+
     loop {
+        #[cfg(feature = "flutter")]
+        dispatch_liveness.set_phase(10);
         if events
             .lifecycle
             .requires_kms_service(drm.is_active(), events.device_removed)
         {
+            #[cfg(feature = "flutter")]
+            dispatch_liveness.set_phase(11);
             service_session_lifecycle(drm, scanouts, swapchain, event_loop, &mut events, deadline)?;
         }
         if events.kms_presentation_recovery_requested {
+            #[cfg(feature = "flutter")]
+            dispatch_liveness.set_phase(12);
             events.kms_presentation_recovery_requested = false;
             scheduler.shutdown_volition();
             recover_stalled_kms_presentation(drm, event_loop, &mut events)?;
             continue;
         }
         if flutter_session::native_app_plugins_require_service(&events) {
+            #[cfg(feature = "flutter")]
+            dispatch_liveness.set_phase(13);
             service_native_app_plugins(event_loop, &mut events, allocator)?;
         }
+        #[cfg(feature = "flutter")]
+        dispatch_liveness.set_phase(20);
         let iteration_now = Instant::now();
         if events.dpms_topology.service_deadline(iteration_now) {
             events.topology_dirty = true;
@@ -355,9 +372,13 @@ pub(super) fn run_flutter_event_loop(
             pending_sensor_rotation = orientation.output_rotation();
             debug!(?orientation, rotation = ?pending_sensor_rotation, "observed device orientation");
         }
+        #[cfg(feature = "flutter")]
+        dispatch_liveness.set_phase(21);
         if !events.sampled_buffer_releases.is_empty() {
             install_sampled_buffer_releases(event_loop, &mut events)?;
         }
+        #[cfg(feature = "flutter")]
+        dispatch_liveness.set_phase(22);
         if !events.ready_fence_signals.is_empty() {
             scheduler.acknowledge_ready_fences(
                 flutter
@@ -367,6 +388,8 @@ pub(super) fn run_flutter_event_loop(
             )?;
         }
         if !events.volition_events.is_empty() {
+            #[cfg(feature = "flutter")]
+            dispatch_liveness.set_phase(30);
             let volition_events = std::mem::take(&mut events.volition_events);
             if let Some(stall) =
                 scheduler.acknowledge_volition_events(volition_events, scanouts, &mut events)?
@@ -383,6 +406,8 @@ pub(super) fn run_flutter_event_loop(
                 continue;
             }
         }
+        #[cfg(feature = "flutter")]
+        dispatch_liveness.set_phase(31);
         if pending_sensor_rotation != output_configuration.sensor_rotation
             && !scheduler.has_pending_scanout_work()
             && flutter.as_ref().is_some_and(|runtime| {
@@ -452,6 +477,8 @@ pub(super) fn run_flutter_event_loop(
         while let Some(request) = pending_output_confirmation_success.pop_front() {
             request.reply(Ok(()));
         }
+        #[cfg(feature = "flutter")]
+        dispatch_liveness.set_phase(40);
         if let Some(reason) = events.lifecycle.shutdown_reason() {
             log_shutdown(reason);
             break;
@@ -482,9 +509,13 @@ pub(super) fn run_flutter_event_loop(
             )?;
         }
         if !scanout_rebased {
+        #[cfg(feature = "flutter")]
+        dispatch_liveness.set_phase(41);
             let runtime = flutter
                 .as_mut()
                 .ok_or("Flutter runtime disappeared during page-flip completion")?;
+            #[cfg(feature = "flutter")]
+            dispatch_liveness.set_phase(42);
             scheduler.handle_completions(
                 runtime,
                 swapchain
@@ -591,7 +622,11 @@ pub(super) fn run_flutter_event_loop(
             if !output_apply_waiting && frame_limit.is_none_or(|limit| raster_frames < limit) {
                 let frame_action = runtime.with_frame_readiness(|pending, target_available| {
                     frame_scheduler.step_with_output_availability(frame_now, pending, |output| {
-                        scheduler.render_available(output) && target_available(output)
+                        let pipeline_ready = scheduler.render_available(output);
+                        if !pipeline_ready {
+                            scheduler.render_unavailable_diagnostic(output);
+                        }
+                        pipeline_ready && target_available(output)
                     })
                 });
                 match frame_action {
@@ -1493,6 +1528,8 @@ pub(super) fn run_flutter_event_loop(
             continue;
         }
 
+        #[cfg(feature = "flutter")]
+        dispatch_liveness.set_phase(51);
         let runtime = flutter
             .as_mut()
             .ok_or("Flutter runtime disappeared from event loop")?;
@@ -1728,7 +1765,12 @@ pub(super) fn run_flutter_event_loop(
         } else {
             next_dispatch_timeout
         };
-        event_loop.dispatch(dispatch_timeout, &mut events)?;
+        #[cfg(feature = "flutter")]
+        dispatch_liveness.enter_dispatch();
+        let dispatch_result = event_loop.dispatch(dispatch_timeout, &mut events);
+        #[cfg(feature = "flutter")]
+        dispatch_liveness.exit_dispatch();
+        dispatch_result?;
     }
 
     cancel_active_screenshot(

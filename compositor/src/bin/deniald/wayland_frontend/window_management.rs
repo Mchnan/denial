@@ -1363,6 +1363,7 @@ pub(super) fn toggle_shell_vertical_maximize_focused_toplevel(state: &mut Runtim
     true
 }
 
+#[cfg(feature = "flutter")]
 pub(super) fn toggle_shell_fullscreen_focused_toplevel(state: &mut RuntimeState) -> bool {
     if let Some(window_id) = focused_local_window(state) {
         queue_local_window_action(state, window_id, WindowAction::ToggleFullscreen);

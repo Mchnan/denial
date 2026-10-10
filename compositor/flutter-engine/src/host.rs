@@ -445,13 +445,15 @@ thread_local! {
 
 fn engine_command_line(project: &EngineProject) -> Vec<CString> {
     let mut arguments = vec![CString::new("deniald").expect("static argv has no NUL")];
+    // The GL root-surface submit forwards present-with-info to the embedder
+    // only when this switch is on; without it the root frame's Submit is a
+    // silent no-op and the output pipeline never sees the frame. Skia-on-GL
+    // needs it exactly as much as Impeller does.
+    arguments.push(CString::new("--denial-gl-fbo-zero-is-no-target")
+        .expect("static argv has no NUL"));
     if project.renderer_backend.uses_impeller() {
-        for argument in [
-            "--enable-impeller=true",
-            "--denial-gl-fbo-zero-is-no-target",
-        ] {
-            arguments.push(CString::new(argument).expect("static argv has no NUL"));
-        }
+        arguments.push(CString::new("--enable-impeller=true")
+            .expect("static argv has no NUL"));
     }
     if project.resource_cache_max_bytes_threshold != 0 {
         arguments.push(
