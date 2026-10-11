@@ -214,6 +214,25 @@ impl OpenGlHandler for FlutterGlHandler {
             (self.gl.bind_framebuffer)(gl::FRAMEBUFFER, framebuffer);
             (self.gl.viewport)(0, 0, size.width as i32, size.height as i32);
         }
+        // The creation-time completeness check does not survive topology
+        // republishes: a live display-scale change has been observed to turn
+        // previously-complete targets into GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT
+        // (status 36054), which then ends the whole session on the first
+        // sample. Probe the bound target every frame and skip it — the broker
+        // rescues the Rendering slot on the next transaction — instead of
+        // handing the engine a target it cannot render into.
+        let fbo_status = unsafe { (self.gl.check_framebuffer_status)(gl::FRAMEBUFFER) };
+        if fbo_status != gl::FRAMEBUFFER_COMPLETE {
+            error!(
+                render_view_id = request.view_id,
+                framebuffer,
+                width = size.width,
+                height = size.height,
+                status = fbo_status,
+                "render target became incomplete; skipping this frame"
+            );
+            return None;
+        }
         if let Some(gpu_timing) = &self.gpu_timing {
             lock(gpu_timing).begin(framebuffer);
         }
@@ -405,41 +424,28 @@ impl OpenGlHandler for FlutterGlHandler {
                     match exported_fence {
                         Ok(fence) => Some(fence),
                         Err(error) => {
-                            let reason = format!(
-                                "could not export the required Flutter native fence: {error}"
-                            );
-                            error!(%error, "required Flutter native fence export failed");
-                            // Complete outstanding sampling only so teardown
-                            // can release imported client buffers safely. This
-                            // frame is not published as an unfenced fallback.
+                            // Not every GL stack offers
+                            // EGL_ANDROID_native_fence_sync (software
+                            // renderers, some virtualized devices). Degrade to
+                            // a synchronous CPU-side completion and publish
+                            // this frame fenceless — the publish path already
+                            // carries the None branch — instead of ending the
+                            // session on the first present.
+                            warn!(%error, "Flutter native fence export unavailable; falling back to glFinish");
                             // SAFETY: present runs with the raster context current.
                             unsafe { (self.gl.finish)() };
-                            let sampled = self.seal_sampled_buffers();
-                            let _ = self.publish_sampled_buffer_release(None, sampled);
-                            let _ = self.events.send(RuntimeEvent::FatalRender {
-                                generation: self.generation,
-                                reason,
-                            });
-                            return false;
+                            None
                         }
                     }
                 }
                 Err(error) => {
-                    let reason =
-                        format!("could not create the required Flutter native fence: {error}");
-                    error!(%error, "required Flutter native fence creation failed");
-                    // Complete outstanding sampling only so teardown can
-                    // release imported client buffers safely. This frame is
-                    // not published as an unfenced fallback.
+                    // Same degrade as the export failure above: software and
+                    // virtualized GL stacks without native fence sync keep
+                    // presenting through the synchronous fallback.
+                    warn!(%error, "Flutter native fence creation unavailable; falling back to glFinish");
                     // SAFETY: present runs with the raster context current.
                     unsafe { (self.gl.finish)() };
-                    let sampled = self.seal_sampled_buffers();
-                    let _ = self.publish_sampled_buffer_release(None, sampled);
-                    let _ = self.events.send(RuntimeEvent::FatalRender {
-                        generation: self.generation,
-                        reason,
-                    });
-                    return false;
+                    None
                 }
             };
             let _publish_stage = RenderAuditCallbackTimer::new(

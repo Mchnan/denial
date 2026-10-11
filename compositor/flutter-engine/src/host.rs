@@ -472,13 +472,15 @@ thread_local! {
 fn engine_command_line(project: &EngineProject) -> Vec<CString> {
     let mut arguments = vec![CString::new("deniald").expect("static argv has no NUL")];
     if project.renderer_backend.uses_impeller() {
-        for argument in [
-            "--enable-impeller=true",
-            "--denial-gl-fbo-zero-is-no-target",
-        ] {
-            arguments.push(CString::new(argument).expect("static argv has no NUL"));
-        }
+        arguments.push(CString::new("--enable-impeller=true").expect("static argv has no NUL"));
     }
+    // The FBO-0 root-surface handoff is embedder behavior, not an Impeller
+    // feature: the GL handler treats a 0 framebuffer as "no root target" and
+    // routes the frame through present-with-info. Gating the flag on Impeller
+    // left every Skia session (the documented non-Slimpeller path) silently
+    // dropping its root present, exhausting the output slots into a permanent
+    // black screen.
+    arguments.push(CString::new("--denial-gl-fbo-zero-is-no-target").expect("static argv has no NUL"));
     if project.resource_cache_max_bytes_threshold != 0 {
         arguments.push(
             CString::new(format!(
